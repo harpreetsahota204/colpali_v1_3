@@ -44,11 +44,15 @@ def load_model(model_name, model_path, **kwargs):
     
     logger.info(f"Loading ColPali model from {model_path}")
 
-    config = ColPaliConfig(
-        dict(
-            model_path=model_path,
-        )
-    )
+    config_dict = dict(model_path=model_path)
+    
+    # Add optional kwargs to config
+    if "pool_factor" in kwargs:
+        config_dict["pool_factor"] = kwargs["pool_factor"]
+    if "pooling_strategy" in kwargs:
+        config_dict["pooling_strategy"] = kwargs["pooling_strategy"]
+    
+    config = ColPaliConfig(config_dict)
     return ColPali(config)
 
 

@@ -34,6 +34,14 @@ class ColPaliConfig(fout.TorchImageModelConfig):
         
         text_prompt (str): Optional baseline text prompt to use for classification.
             Defaults to "".
+        
+        pool_factor (int): Token pooling compression factor. Default is 3 (optimal).
+            Higher values = more compression, lower accuracy.
+        
+        pooling_strategy (str): Final pooling strategy after token pooling.
+            Options: "mean" (default) or "max".
+            - "mean": Average pooling, good for holistic document matching
+            - "max": Max pooling, good for specific content/keyword matching
     """
 
     def __init__(self, d):
@@ -53,6 +61,19 @@ class ColPaliConfig(fout.TorchImageModelConfig):
         
         # Optional base text prompt
         self.text_prompt = self.parse_string(d, "text_prompt", default="")
+        
+        # Token pooling configuration
+        self.pool_factor = self.parse_int(d, "pool_factor", default=3)
+        self.pooling_strategy = self.parse_string(
+            d, "pooling_strategy", default="mean"
+        )
+        
+        # Validate pooling strategy
+        if self.pooling_strategy not in ["mean", "max"]:
+            raise ValueError(
+                f"pooling_strategy must be 'mean' or 'max', "
+                f"got '{self.pooling_strategy}'"
+            )
 
 
 class ColPali(fout.TorchImageModel, fom.PromptMixin):
@@ -91,7 +112,8 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         
         # Initialize token pooler for compression
         self.token_pooler = HierarchicalTokenPooler()
-        self.pool_factor = 3  # Optimal trade-off: 66.7% reduction, 97.8% performance retention
+        self.pool_factor = config.pool_factor
+        self.pooling_strategy = config.pooling_strategy
 
     @property
     def has_embeddings(self):
@@ -110,6 +132,30 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
             bool: Always True for this model as text embedding is supported
         """
         return True
+    
+    def _apply_final_pooling(self, embeddings):
+        """Apply final pooling strategy to token-pooled embeddings.
+        
+        Reduces multi-vector embeddings to fixed-dimension vectors for FiftyOne compatibility.
+        
+        Args:
+            embeddings: Token-pooled embeddings with shape (batch, reduced_vectors, dim)
+            
+        Returns:
+            torch.Tensor: Fixed-dimension pooled embeddings with shape (batch, dim)
+        """
+        if self.pooling_strategy == "mean":
+            # Average across all vectors
+            pooled = embeddings.mean(dim=1)  # (batch, dim)
+            print(f"[DEBUG _apply_final_pooling] Mean pooling: {embeddings.shape} → {pooled.shape}")
+            return pooled
+        elif self.pooling_strategy == "max":
+            # Take maximum across all vectors
+            pooled = embeddings.max(dim=1)[0]  # (batch, dim)
+            print(f"[DEBUG _apply_final_pooling] Max pooling: {embeddings.shape} → {pooled.shape}")
+            return pooled
+        else:
+            raise ValueError(f"Unknown pooling_strategy: {self.pooling_strategy}")
 
     def _load_model(self, config):
         """Load the model and processor from disk or HuggingFace.
@@ -223,9 +269,11 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         )
         print(f"[DEBUG embed_prompt] After token pooling (factor={self.pool_factor}): {pooled_embeddings.shape}")
         
-        # Return first (and only) embedding
-        # Shape: (1, reduced_num_vectors, dim) -> (reduced_num_vectors, dim)
-        result = pooled_embeddings[0].detach().cpu().numpy()
+        # Apply final pooling strategy (always produces fixed dimension)
+        final_embeddings = self._apply_final_pooling(pooled_embeddings)
+        
+        # Return first (and only) embedding: (1, dim) -> (dim,)
+        result = final_embeddings[0].detach().cpu().numpy()
         print(f"[DEBUG embed_prompt] Final shape: {result.shape}")
         return result
 
@@ -255,8 +303,11 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         )
         print(f"[DEBUG embed_prompts] After token pooling (factor={self.pool_factor}): {pooled_embeddings.shape}")
         
-        # Return pooled embeddings as numpy array
-        result = pooled_embeddings.detach().cpu().numpy()
+        # Apply final pooling strategy
+        final_embeddings = self._apply_final_pooling(pooled_embeddings)
+        
+        # Return as numpy array
+        result = final_embeddings.detach().cpu().numpy()
         print(f"[DEBUG embed_prompts] Final shape: {result.shape}")
         return result
 
@@ -316,11 +367,14 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         )
         print(f"[DEBUG embed_images] After token pooling (factor={self.pool_factor}): {pooled_embeddings.shape}")
         
-        # Cache pooled embeddings for get_embeddings() method
-        self._last_computed_embeddings = pooled_embeddings
+        # Apply final pooling strategy
+        final_embeddings = self._apply_final_pooling(pooled_embeddings)
         
-        # Return pooled embeddings as numpy array
-        result = pooled_embeddings.detach().cpu().numpy()
+        # Cache final embeddings for get_embeddings() method
+        self._last_computed_embeddings = final_embeddings
+        
+        # Return as numpy array
+        result = final_embeddings.detach().cpu().numpy()
         print(f"[DEBUG embed_images] Final shape: {result.shape}")
         return result
     
