@@ -195,45 +195,46 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
     def embed_prompt(self, prompt):
         """Embed a single text prompt.
         
-        Returns a flattened version of the multi-vector embedding for FiftyOne compatibility.
+        Uses mean pooling to convert multi-vector embeddings to fixed-dimension
+        vectors for FiftyOne compatibility.
         
         Args:
             prompt: Text prompt to embed
             
         Returns:
-            numpy array: Flattened embedding for the prompt
+            numpy array: Pooled embedding for the prompt with shape (dim,)
         """
         # Embed the single prompt
         embeddings = self._embed_prompts([prompt])
         
-        # Flatten multi-vector to single vector for FiftyOne compatibility
-        # Shape: (1, num_vectors, dim) -> (num_vectors * dim,)
-        flattened = embeddings[0].flatten()
+        # Pool multi-vector to fixed-dimension single vector
+        # Shape: (1, num_vectors, dim) -> (1, dim) -> (dim,)
+        pooled = embeddings.mean(dim=1)[0]
         
         # Return as CPU numpy array
-        return flattened.detach().cpu().numpy()
+        return pooled.detach().cpu().numpy()
 
     def embed_prompts(self, prompts):
         """Embed multiple text prompts.
         
-        Returns flattened versions of the multi-vector embeddings for FiftyOne compatibility.
+        Uses mean pooling to convert multi-vector embeddings to fixed-dimension
+        vectors for FiftyOne compatibility.
         
         Args:
             prompts: List of text prompts to embed
             
         Returns:
-            numpy array: Flattened embeddings for the prompts with shape (batch, num_vectors * dim)
+            numpy array: Pooled embeddings for the prompts with shape (batch, dim)
         """
         # Embed prompts
         embeddings = self._embed_prompts(prompts)
         
-        # Flatten multi-vector to single vector for each prompt
-        # Shape: (batch, num_vectors, dim) -> (batch, num_vectors * dim)
-        batch_size = embeddings.shape[0]
-        flattened = embeddings.reshape(batch_size, -1)
+        # Pool multi-vector to fixed-dimension single vector for each prompt
+        # Shape: (batch, num_vectors, dim) -> (batch, dim)
+        pooled = embeddings.mean(dim=1)
         
         # Return as CPU numpy array
-        return flattened.detach().cpu().numpy()
+        return pooled.detach().cpu().numpy()
 
     def embed_images(self, imgs):
         """Embed a batch of images.
@@ -241,11 +242,14 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         With raw_inputs=True, FiftyOne passes images in their original format
         (PIL, numpy array, or tensor). ColPaliProcessor requires PIL Images.
         
+        Uses mean pooling to convert multi-vector embeddings to fixed-dimension
+        vectors for FiftyOne compatibility.
+        
         Args:
             imgs: List of images to embed (PIL images, numpy arrays (HWC), or tensors (CHW))
             
         Returns:
-            numpy array: Flattened embeddings for the images
+            numpy array: Pooled embeddings for the images with shape (batch, dim)
         """
         # Convert to PIL Images if needed (ColPaliProcessor requirement)
         pil_images = []
@@ -274,19 +278,18 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         with torch.no_grad():
             image_embeddings = self.model(**batch_images)
         
-        # Store the full multi-vector embeddings for scoring
+        # Store the full multi-vector embeddings for classification scoring
         self._last_computed_multi_vector_embeddings = image_embeddings
         
-        # Flatten multi-vector to single vector for FiftyOne compatibility
-        # Shape: (batch, num_vectors, dim) -> (batch, num_vectors * dim)
-        batch_size = image_embeddings.shape[0]
-        flattened = image_embeddings.reshape(batch_size, -1)
+        # Pool multi-vector to fixed-dimension single vector for FiftyOne compatibility
+        # Shape: (batch, num_vectors, dim) -> (batch, dim)
+        pooled = image_embeddings.mean(dim=1)
         
-        # Cache the flattened embeddings for get_embeddings() method
-        self._last_computed_embeddings = flattened
+        # Cache the pooled embeddings for get_embeddings() method
+        self._last_computed_embeddings = pooled
         
         # Return as CPU numpy array for FiftyOne compatibility
-        return flattened.detach().cpu().numpy()
+        return pooled.detach().cpu().numpy()
     
     def embed(self, img):
         """Embed a single image.
