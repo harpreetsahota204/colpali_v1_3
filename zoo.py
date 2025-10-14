@@ -13,6 +13,7 @@ import fiftyone.utils.torch as fout
 import torch
 import torch.nn.functional as F
 from colpali_engine.models import ColPali as ColPaliModel, ColPaliProcessor
+from colpali_engine.compression.token_pooling import HierarchicalTokenPooler
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,10 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         self._text_features = None  # Cached text features for classification
         self._last_computed_embeddings = None  # Last computed image embeddings
         self._last_computed_multi_vector_embeddings = None  # Store full multi-vector embeddings
+        
+        # Initialize token pooler for compression
+        self.token_pooler = HierarchicalTokenPooler()
+        self.pool_factor = 3  # Optimal trade-off: 66.7% reduction, 97.8% performance retention
 
     @property
     def has_embeddings(self):
@@ -193,48 +198,66 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         return query_embeddings
 
     def embed_prompt(self, prompt):
-        """Embed a single text prompt.
+        """Embed a single text prompt with token pooling.
         
-        Returns raw multi-vector embedding.
+        Uses token pooling to reduce sequence length while retaining ~98% performance.
         
         Args:
             prompt: Text prompt to embed
             
         Returns:
-            numpy array: Multi-vector embedding for the prompt
+            numpy array: Token-pooled embedding with shape (reduced_num_vectors, dim)
         """
         print(f"[DEBUG embed_prompt] Embedding prompt: {prompt[:50]}...")
         
         # Embed the single prompt
         embeddings = self._embed_prompts([prompt])
-        print(f"[DEBUG embed_prompt] Multi-vector shape: {embeddings.shape}")
+        print(f"[DEBUG embed_prompt] Raw multi-vector shape: {embeddings.shape}")
         
-        # Return raw multi-vector as numpy array
-        # Shape: (1, num_vectors, dim) -> (num_vectors, dim)
-        result = embeddings[0].detach().cpu().numpy()
-        print(f"[DEBUG embed_prompt] Returning shape: {result.shape}")
+        # Apply token pooling to reduce sequence length
+        pooled_embeddings = self.token_pooler.pool_embeddings(
+            embeddings,
+            pool_factor=self.pool_factor,
+            padding=True,
+            padding_side=self.processor.tokenizer.padding_side,
+        )
+        print(f"[DEBUG embed_prompt] After token pooling (factor={self.pool_factor}): {pooled_embeddings.shape}")
+        
+        # Return first (and only) embedding
+        # Shape: (1, reduced_num_vectors, dim) -> (reduced_num_vectors, dim)
+        result = pooled_embeddings[0].detach().cpu().numpy()
+        print(f"[DEBUG embed_prompt] Final shape: {result.shape}")
         return result
 
     def embed_prompts(self, prompts):
-        """Embed multiple text prompts.
+        """Embed multiple text prompts with token pooling.
         
-        Returns raw multi-vector embeddings.
+        Uses token pooling to reduce sequence length while retaining ~98% performance.
         
         Args:
             prompts: List of text prompts to embed
             
         Returns:
-            numpy array: Multi-vector embeddings for the prompts with shape (batch, num_vectors, dim)
+            numpy array: Token-pooled embeddings with shape (batch, reduced_num_vectors, dim)
         """
         print(f"[DEBUG embed_prompts] Embedding {len(prompts)} prompts")
         
         # Embed prompts
         embeddings = self._embed_prompts(prompts)
-        print(f"[DEBUG embed_prompts] Multi-vector shape: {embeddings.shape}")
+        print(f"[DEBUG embed_prompts] Raw multi-vector shape: {embeddings.shape}")
         
-        # Return raw multi-vector as numpy array
-        result = embeddings.detach().cpu().numpy()
-        print(f"[DEBUG embed_prompts] Returning shape: {result.shape}")
+        # Apply token pooling to reduce sequence length
+        pooled_embeddings = self.token_pooler.pool_embeddings(
+            embeddings,
+            pool_factor=self.pool_factor,
+            padding=True,
+            padding_side=self.processor.tokenizer.padding_side,
+        )
+        print(f"[DEBUG embed_prompts] After token pooling (factor={self.pool_factor}): {pooled_embeddings.shape}")
+        
+        # Return pooled embeddings as numpy array
+        result = pooled_embeddings.detach().cpu().numpy()
+        print(f"[DEBUG embed_prompts] Final shape: {result.shape}")
         return result
 
     def embed_images(self, imgs):
@@ -279,17 +302,26 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         with torch.no_grad():
             image_embeddings = self.model(**batch_images)
         
-        print(f"[DEBUG embed_images] Multi-vector shape: {image_embeddings.shape}")
+        print(f"[DEBUG embed_images] Raw multi-vector shape: {image_embeddings.shape}")
         
-        # Store the full multi-vector embeddings for classification scoring
+        # Store the full multi-vector embeddings for classification scoring (before pooling)
         self._last_computed_multi_vector_embeddings = image_embeddings
         
-        # Cache for get_embeddings() method
-        self._last_computed_embeddings = image_embeddings
+        # Apply token pooling to reduce sequence length
+        pooled_embeddings = self.token_pooler.pool_embeddings(
+            image_embeddings,
+            pool_factor=self.pool_factor,
+            padding=True,
+            padding_side=self.processor.tokenizer.padding_side,
+        )
+        print(f"[DEBUG embed_images] After token pooling (factor={self.pool_factor}): {pooled_embeddings.shape}")
         
-        # Return raw multi-vector as numpy array
-        result = image_embeddings.detach().cpu().numpy()
-        print(f"[DEBUG embed_images] Returning shape: {result.shape}")
+        # Cache pooled embeddings for get_embeddings() method
+        self._last_computed_embeddings = pooled_embeddings
+        
+        # Return pooled embeddings as numpy array
+        result = pooled_embeddings.detach().cpu().numpy()
+        print(f"[DEBUG embed_images] Final shape: {result.shape}")
         return result
     
     def embed(self, img):
