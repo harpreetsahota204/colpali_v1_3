@@ -41,6 +41,10 @@ class ColPaliConfig(fout.TorchImageModelConfig):
         Args:
             d: A dictionary containing the configuration parameters
         """
+        # ColPaliProcessor handles all preprocessing, so we use raw inputs
+        if "raw_inputs" not in d:
+            d["raw_inputs"] = True
+        
         super().__init__(d)
         
         # Path to model weights or HuggingFace model ID
@@ -234,14 +238,37 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
     def embed_images(self, imgs):
         """Embed a batch of images.
         
+        With raw_inputs=True, FiftyOne passes images in their original format
+        (PIL, numpy array, or tensor). ColPaliProcessor requires PIL Images.
+        
         Args:
-            imgs: List of images to embed (PIL images)
+            imgs: List of images to embed (PIL images, numpy arrays (HWC), or tensors (CHW))
             
         Returns:
             numpy array: Flattened embeddings for the images
         """
+        # Convert to PIL Images if needed (ColPaliProcessor requirement)
+        pil_images = []
+        for img in imgs:
+            if isinstance(img, Image.Image):
+                # Already PIL Image
+                pil_images.append(img)
+            elif isinstance(img, torch.Tensor):
+                # Raw tensor (CHW, uint8) → PIL Image
+                img_np = img.permute(1, 2, 0).cpu().numpy()
+                if img_np.dtype != np.uint8:
+                    img_np = img_np.astype(np.uint8)
+                pil_images.append(Image.fromarray(img_np))
+            elif isinstance(img, np.ndarray):
+                # Numpy array (HWC, uint8) → PIL Image
+                if img.dtype != np.uint8:
+                    img = img.astype(np.uint8)
+                pil_images.append(Image.fromarray(img))
+            else:
+                raise TypeError(f"Unsupported image type: {type(img)}")
+        
         # Process images using ColPaliProcessor
-        batch_images = self.processor.process_images(imgs).to(self.device)
+        batch_images = self.processor.process_images(pil_images).to(self.device)
         
         # Get image embeddings (multi-vector)
         with torch.no_grad():
