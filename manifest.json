@@ -1,0 +1,32 @@
+{
+    "name": "colpali_v1_3",
+    "url": "https://github.com/harpreetsahota204/colpali_v1_3",
+    "models": [
+        {
+            "base_name": "vidore/colpali-v1.3-merged",
+            "base_filename":"colpali-v1.3-merged",
+            "author": "Vidore",
+            "license": "gemma",
+            "source": "https://huggingface.co/vidore/colpali-v1.3-merged",
+            "description": "ColPali is a model based on a novel model architecture and training strategy based on Vision Language Models (VLMs) to efficiently index documents from their visual features. It is a PaliGemma-3B extension that generates ColBERT- style multi-vector representations of text and images",
+            "tags": [
+                "classification",
+                "logits",
+                "embeddings",
+                "torch",
+                "visual-document-retrieval",
+                "zero-shot"
+            ],
+            "date_added": "2025-10-14",
+            "requirements": {
+                "packages": ["huggingface-hub","transformers", "torch", "torchvision",  "colpali-engine"],
+                "cpu": {
+                    "support": true
+                },
+                "gpu": {
+                    "support": true
+                }
+            }
+        }
+   ]
+}
