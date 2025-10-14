@@ -195,46 +195,47 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
     def embed_prompt(self, prompt):
         """Embed a single text prompt.
         
-        Uses mean pooling to convert multi-vector embeddings to fixed-dimension
-        vectors for FiftyOne compatibility.
+        Returns raw multi-vector embedding.
         
         Args:
             prompt: Text prompt to embed
             
         Returns:
-            numpy array: Pooled embedding for the prompt with shape (dim,)
+            numpy array: Multi-vector embedding for the prompt
         """
+        print(f"[DEBUG embed_prompt] Embedding prompt: {prompt[:50]}...")
+        
         # Embed the single prompt
         embeddings = self._embed_prompts([prompt])
+        print(f"[DEBUG embed_prompt] Multi-vector shape: {embeddings.shape}")
         
-        # Pool multi-vector to fixed-dimension single vector
-        # Shape: (1, num_vectors, dim) -> (1, dim) -> (dim,)
-        pooled = embeddings.mean(dim=1)[0]
-        
-        # Return as CPU numpy array
-        return pooled.detach().cpu().numpy()
+        # Return raw multi-vector as numpy array
+        # Shape: (1, num_vectors, dim) -> (num_vectors, dim)
+        result = embeddings[0].detach().cpu().numpy()
+        print(f"[DEBUG embed_prompt] Returning shape: {result.shape}")
+        return result
 
     def embed_prompts(self, prompts):
         """Embed multiple text prompts.
         
-        Uses mean pooling to convert multi-vector embeddings to fixed-dimension
-        vectors for FiftyOne compatibility.
+        Returns raw multi-vector embeddings.
         
         Args:
             prompts: List of text prompts to embed
             
         Returns:
-            numpy array: Pooled embeddings for the prompts with shape (batch, dim)
+            numpy array: Multi-vector embeddings for the prompts with shape (batch, num_vectors, dim)
         """
+        print(f"[DEBUG embed_prompts] Embedding {len(prompts)} prompts")
+        
         # Embed prompts
         embeddings = self._embed_prompts(prompts)
+        print(f"[DEBUG embed_prompts] Multi-vector shape: {embeddings.shape}")
         
-        # Pool multi-vector to fixed-dimension single vector for each prompt
-        # Shape: (batch, num_vectors, dim) -> (batch, dim)
-        pooled = embeddings.mean(dim=1)
-        
-        # Return as CPU numpy array
-        return pooled.detach().cpu().numpy()
+        # Return raw multi-vector as numpy array
+        result = embeddings.detach().cpu().numpy()
+        print(f"[DEBUG embed_prompts] Returning shape: {result.shape}")
+        return result
 
     def embed_images(self, imgs):
         """Embed a batch of images.
@@ -242,15 +243,15 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         With raw_inputs=True, FiftyOne passes images in their original format
         (PIL, numpy array, or tensor). ColPaliProcessor requires PIL Images.
         
-        Uses mean pooling to convert multi-vector embeddings to fixed-dimension
-        vectors for FiftyOne compatibility.
+        Returns raw multi-vector embeddings.
         
         Args:
             imgs: List of images to embed (PIL images, numpy arrays (HWC), or tensors (CHW))
             
         Returns:
-            numpy array: Pooled embeddings for the images with shape (batch, dim)
+            numpy array: Multi-vector embeddings for the images with shape (batch, num_vectors, dim)
         """
+        print(f"[DEBUG embed_images] Embedding {len(imgs)} images")
         # Convert to PIL Images if needed (ColPaliProcessor requirement)
         pil_images = []
         for img in imgs:
@@ -278,18 +279,18 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         with torch.no_grad():
             image_embeddings = self.model(**batch_images)
         
+        print(f"[DEBUG embed_images] Multi-vector shape: {image_embeddings.shape}")
+        
         # Store the full multi-vector embeddings for classification scoring
         self._last_computed_multi_vector_embeddings = image_embeddings
         
-        # Pool multi-vector to fixed-dimension single vector for FiftyOne compatibility
-        # Shape: (batch, num_vectors, dim) -> (batch, dim)
-        pooled = image_embeddings.mean(dim=1)
+        # Cache for get_embeddings() method
+        self._last_computed_embeddings = image_embeddings
         
-        # Cache the pooled embeddings for get_embeddings() method
-        self._last_computed_embeddings = pooled
-        
-        # Return as CPU numpy array for FiftyOne compatibility
-        return pooled.detach().cpu().numpy()
+        # Return raw multi-vector as numpy array
+        result = image_embeddings.detach().cpu().numpy()
+        print(f"[DEBUG embed_images] Returning shape: {result.shape}")
+        return result
     
     def embed(self, img):
         """Embed a single image.
@@ -300,8 +301,9 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
             img: PIL image to embed
             
         Returns:
-            numpy array: Flattened embedding for the image
+            numpy array: Multi-vector embedding for the image with shape (num_vectors, dim)
         """
+        print("[DEBUG embed] Embedding single image")
         # Convert single image to a list for batch processing
         imgs = [img]
         
@@ -320,8 +322,9 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
             imgs: List of images to embed (PIL images)
             
         Returns:
-            numpy array: Flattened embeddings for the images
+            numpy array: Multi-vector embeddings for the images with shape (batch, num_vectors, dim)
         """
+        print(f"[DEBUG embed_all] Embedding {len(imgs)} images")
         # Directly call embed_images which handles batch processing
         return self.embed_images(imgs)
     
@@ -332,11 +335,13 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         in the expected format for FiftyOne.
         
         Returns:
-            numpy array: The last computed flattened embeddings
+            numpy array: The last computed multi-vector embeddings
             
         Raises:
             ValueError: If no embeddings have been computed yet
         """
+        print("[DEBUG get_embeddings] Called")
+        
         # Check if embeddings capability is enabled
         if not self.has_embeddings:
             raise ValueError("This model instance does not expose embeddings")
@@ -344,9 +349,13 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         # Check if embeddings have been computed
         if self._last_computed_embeddings is None:
             raise ValueError("No embeddings have been computed yet")
+        
+        print(f"[DEBUG get_embeddings] Cached embeddings shape: {self._last_computed_embeddings.shape}")
             
         # Return the stored embeddings as a CPU numpy array
-        return self._last_computed_embeddings.detach().cpu().numpy()
+        result = self._last_computed_embeddings.detach().cpu().numpy()
+        print(f"[DEBUG get_embeddings] Returning shape: {result.shape}")
+        return result
 
     def _get_class_logits(self, text_features, image_features):
         """Calculate multi-vector similarity scores between text and image features.
