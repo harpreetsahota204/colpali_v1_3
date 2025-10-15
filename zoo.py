@@ -440,7 +440,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         with torch.no_grad():
             # Use ColPaliProcessor's scoring method for multi-vector similarity
             # Returns shape (num_classes, num_images)
-            logits_per_text = self.processor.score_multi_vector(text_features, image_features)
+            logits_per_text = self.processor.score_single_vector(text_features, image_features)
             
             # Transpose to get (num_images, num_classes) for FiftyOne
             logits_per_image = logits_per_text.t()
