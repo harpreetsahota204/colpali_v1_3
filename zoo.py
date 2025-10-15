@@ -147,10 +147,12 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         if self.pooling_strategy == "mean":
             # Average across all vectors
             pooled = embeddings.mean(dim=1)  # (batch, dim)
+            print(f"[DEBUG _apply_final_pooling] Mean pooling: {embeddings.shape} → {pooled.shape}")
             return pooled
         elif self.pooling_strategy == "max":
             # Take maximum across all vectors
             pooled = embeddings.max(dim=1)[0]  # (batch, dim)
+            print(f"[DEBUG _apply_final_pooling] Max pooling: {embeddings.shape} → {pooled.shape}")
             return pooled
         else:
             raise ValueError(f"Unknown pooling_strategy: {self.pooling_strategy}")
@@ -252,10 +254,12 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         Returns:
             numpy array: Token-pooled embedding with shape (reduced_num_vectors, dim)
         """
+        print(f"[DEBUG embed_prompt] Embedding prompt: {prompt[:50]}...")
         
         # Embed the single prompt
         embeddings = self._embed_prompts([prompt])
-
+        print(f"[DEBUG embed_prompt] Raw multi-vector shape: {embeddings.shape}")
+        
         # Apply token pooling to reduce sequence length
         pooled_embeddings = self.token_pooler.pool_embeddings(
             embeddings,
@@ -263,12 +267,14 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
             padding=True,
             padding_side=self.processor.tokenizer.padding_side,
         )
+        print(f"[DEBUG embed_prompt] After token pooling (factor={self.pool_factor}): {pooled_embeddings.shape}")
         
         # Apply final pooling strategy (always produces fixed dimension)
         final_embeddings = self._apply_final_pooling(pooled_embeddings)
         
         # Return first (and only) embedding: (1, dim) -> (dim,)
         result = final_embeddings[0].detach().cpu().numpy()
+        print(f"[DEBUG embed_prompt] Final shape: {result.shape}")
         return result
 
     def embed_prompts(self, prompts):
@@ -282,10 +288,12 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         Returns:
             numpy array: Token-pooled embeddings with shape (batch, reduced_num_vectors, dim)
         """
-
+        print(f"[DEBUG embed_prompts] Embedding {len(prompts)} prompts")
+        
         # Embed prompts
         embeddings = self._embed_prompts(prompts)
-
+        print(f"[DEBUG embed_prompts] Raw multi-vector shape: {embeddings.shape}")
+        
         # Apply token pooling to reduce sequence length
         pooled_embeddings = self.token_pooler.pool_embeddings(
             embeddings,
@@ -293,12 +301,14 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
             padding=True,
             padding_side=self.processor.tokenizer.padding_side,
         )
+        print(f"[DEBUG embed_prompts] After token pooling (factor={self.pool_factor}): {pooled_embeddings.shape}")
         
         # Apply final pooling strategy
         final_embeddings = self._apply_final_pooling(pooled_embeddings)
         
         # Return as numpy array
         result = final_embeddings.detach().cpu().numpy()
+        print(f"[DEBUG embed_prompts] Final shape: {result.shape}")
         return result
 
     def embed_images(self, imgs):
@@ -315,6 +325,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         Returns:
             numpy array: Multi-vector embeddings for the images with shape (batch, num_vectors, dim)
         """
+        print(f"[DEBUG embed_images] Embedding {len(imgs)} images")
         # Convert to PIL Images if needed (ColPaliProcessor requirement)
         pil_images = []
         for img in imgs:
@@ -342,6 +353,8 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         with torch.no_grad():
             image_embeddings = self.model(**batch_images)
         
+        print(f"[DEBUG embed_images] Raw multi-vector shape: {image_embeddings.shape}")
+        
         # Store the full multi-vector embeddings for classification scoring (before pooling)
         self._last_computed_multi_vector_embeddings = image_embeddings
         
@@ -352,6 +365,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
             padding=True,
             padding_side=self.processor.tokenizer.padding_side,
         )
+        print(f"[DEBUG embed_images] After token pooling (factor={self.pool_factor}): {pooled_embeddings.shape}")
         
         # Apply final pooling strategy
         final_embeddings = self._apply_final_pooling(pooled_embeddings)
@@ -361,6 +375,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         
         # Return as numpy array
         result = final_embeddings.detach().cpu().numpy()
+        print(f"[DEBUG embed_images] Final shape: {result.shape}")
         return result
     
     def embed(self, img):
@@ -374,6 +389,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         Returns:
             numpy array: Multi-vector embedding for the image with shape (num_vectors, dim)
         """
+        print("[DEBUG embed] Embedding single image")
         # Convert single image to a list for batch processing
         imgs = [img]
         
@@ -394,6 +410,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         Returns:
             numpy array: Multi-vector embeddings for the images with shape (batch, num_vectors, dim)
         """
+        print(f"[DEBUG embed_all] Embedding {len(imgs)} images")
         # Directly call embed_images which handles batch processing
         return self.embed_images(imgs)
     
@@ -409,6 +426,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         Raises:
             ValueError: If no embeddings have been computed yet
         """
+        print("[DEBUG get_embeddings] Called")
         
         # Check if embeddings capability is enabled
         if not self.has_embeddings:
@@ -418,9 +436,11 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         if self._last_computed_embeddings is None:
             raise ValueError("No embeddings have been computed yet")
         
+        print(f"[DEBUG get_embeddings] Cached embeddings shape: {self._last_computed_embeddings.shape}")
             
         # Return the stored embeddings as a CPU numpy array
         result = self._last_computed_embeddings.detach().cpu().numpy()
+        print(f"[DEBUG get_embeddings] Returning shape: {result.shape}")
         return result
 
     def _get_class_logits(self, text_features, image_features):
