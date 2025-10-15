@@ -107,8 +107,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         
         # Storage for text features and embeddings
         self._text_features = None  # Cached text features for classification
-        self._last_computed_embeddings = None  # Last computed image embeddings
-        self._last_computed_multi_vector_embeddings = None  # Store full multi-vector embeddings
+        self._last_computed_embeddings = None  # Last computed compressed embeddings
         
         # Initialize token pooler for compression
         self.token_pooler = HierarchicalTokenPooler()
@@ -203,9 +202,10 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         
         This method caches the result for efficiency in repeated calls.
         Creates embeddings for each class by combining text_prompt with class names.
+        Applies same compression as image embeddings for consistency.
         
         Returns:
-            torch.Tensor: Multi-vector text features for classification
+            torch.Tensor: Compressed text features for classification
         """
         # Check if text features are already computed and cached
         if self._text_features is None:
@@ -213,8 +213,20 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
             prompts = [
                 "%s %s" % (self.config.text_prompt, c) for c in self.classes
             ]
-            # Compute and cache the text features for all classes
-            self._text_features = self._embed_prompts(prompts)
+            # Compute raw text features
+            raw_text_features = self._embed_prompts(prompts)
+            
+            # Apply same compression as images for consistency
+            # Token pooling
+            pooled = self.token_pooler.pool_embeddings(
+                raw_text_features,
+                pool_factor=self.pool_factor,
+                padding=True,
+                padding_side=self.processor.tokenizer.padding_side,
+            )
+            
+            # Final pooling
+            self._text_features = self._apply_final_pooling(pooled)
         
         # Return the cached features
         return self._text_features
@@ -342,9 +354,6 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         with torch.no_grad():
             image_embeddings = self.model(**batch_images)
         
-        # Store the full multi-vector embeddings for classification scoring (before pooling)
-        self._last_computed_multi_vector_embeddings = image_embeddings
-        
         # Apply token pooling to reduce sequence length
         pooled_embeddings = self.token_pooler.pool_embeddings(
             image_embeddings,
@@ -424,13 +433,13 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         return result
 
     def _get_class_logits(self, text_features, image_features):
-        """Calculate multi-vector similarity scores between text and image features.
+        """Calculate similarity scores between compressed text and image features.
         
-        Uses ColPali's multi-vector scoring approach similar to ColBERT's MaxSim operation.
+        Uses ColPali's single-vector scoring after token pooling and final pooling compression.
         
         Args:
-            text_features: Multi-vector text embeddings (torch.Tensor) with shape (num_classes, num_vectors, dim)
-            image_features: Multi-vector image embeddings (torch.Tensor) with shape (num_images, num_vectors, dim)
+            text_features: Compressed text embeddings (torch.Tensor) with shape (num_classes, dim)
+            image_features: Compressed image embeddings (torch.Tensor) with shape (num_images, dim)
             
         Returns:
             tuple: (logits_per_image, logits_per_text) following CLIP convention
@@ -438,7 +447,8 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
                 - logits_per_text: shape (num_classes, num_images)
         """
         with torch.no_grad():
-            # Use ColPaliProcessor's scoring method for multi-vector similarity
+            # Use ColPaliProcessor's single-vector scoring method
+            # Both inputs are compressed to fixed dimensions via token + final pooling
             # Returns shape (num_classes, num_images)
             logits_per_text = self.processor.score_single_vector(text_features, image_features)
             
@@ -451,7 +461,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         """Run prediction on a batch of images.
         
         Used for zero-shot classification by comparing image embeddings
-        to text embeddings of class names using multi-vector similarity.
+        to text embeddings of class names using single-vector similarity.
         
         Args:
             imgs: List of images to classify
@@ -459,16 +469,16 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         Returns:
             numpy array: Similarity scores (logits)
         """
-        # Get image embeddings (stores multi-vector embeddings internally)
+        # Get compressed image embeddings (token-pooled + final-pooled)
         _ = self.embed_images(imgs)
         
-        # Get multi-vector image embeddings
-        image_features = self._last_computed_multi_vector_embeddings
+        # Get compressed image embeddings
+        image_features = self._last_computed_embeddings
         
-        # Get multi-vector text embeddings for classes
+        # Get compressed text embeddings for classes
         text_features = self._get_text_features()
         
-        # Calculate multi-vector similarity (following CLIP pattern)
+        # Calculate single-vector similarity (following CLIP pattern)
         output, _ = self._get_class_logits(text_features, image_features)
         
         # Get frame size for output processor
