@@ -223,6 +223,34 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         # Return the cached features
         return self._text_features
     
+    @property
+    def classes(self):
+        """The list of class labels for the model."""
+        return self._classes
+
+    @classes.setter
+    def classes(self, value):
+        """Set new classes and invalidate cached text features."""
+        self._classes = value
+        self._text_features = None  # Invalidate cache
+        
+        # Rebuild output processor if classes are provided
+        if value is not None and len(value) > 0:
+            self._output_processor = self._build_output_processor(self.config)
+        else:
+            self._output_processor = None
+            
+        @property
+        def text_prompt(self):
+            """The text prompt prefix for classification."""
+            return self.config.text_prompt
+
+        @text_prompt.setter  
+        def text_prompt(self, value):
+            """Set new text prompt and invalidate cached text features."""
+            self.config.text_prompt = value
+            self._text_features = None  # Invalidate cache
+
     def _embed_prompts(self, prompts):
         """Embed text prompts for classification.
         
