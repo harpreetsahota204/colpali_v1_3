@@ -20,38 +20,32 @@ def download_model(model_name, model_path):
     
     snapshot_download(repo_id=model_name, local_dir=model_path)
 
+
+
 def load_model(model_name, model_path, **kwargs):
-    """Loads the model.
-
+    """Loads the ColPali model.
+    
     Args:
-        model_name: the name of the model to load, as declared by the
-            ``base_name`` and optional ``version`` fields of the manifest
-        model_path: the absolute filename or directory to which the model was
-            donwloaded, as declared by the ``base_filename`` field of the
-            manifest
-        **kwargs: optional keyword arguments that configure how the model
-            is loaded
-
+        model_name: the name of the model
+        model_path: the path to the model on disk
+        **kwargs: additional keyword arguments including:
+            - classes: list of class names for classification (optional)
+            - pool_factor: token pooling compression factor (default: 3)
+            - pooling_strategy: "mean" or "max" (default: "mean")
+            - text_prompt: optional text prompt prefix for classification
+            
     Returns:
-        a :class:`fiftyone.core.models.Model`
+        a ColPali instance
     """
-
-    if not model_path or not os.path.isdir(model_path):
-        raise ValueError(
-            f"Invalid model_path: '{model_path}'. Please ensure the model has been downloaded "
-            "using fiftyone.zoo.download_zoo_model(...)"
-        )
+    # Start with base configuration
+    config_dict = {
+        "model_path": model_path,
+    }
     
-    logger.info(f"Loading ColPali model from {model_path}")
-
-    config_dict = dict(model_path=model_path)
+    #Merge all kwargs into config_dict
+    config_dict.update(kwargs)
     
-    # Add optional kwargs to config
-    if "pool_factor" in kwargs:
-        config_dict["pool_factor"] = kwargs["pool_factor"]
-    if "pooling_strategy" in kwargs:
-        config_dict["pooling_strategy"] = kwargs["pooling_strategy"]
-    
+    # Create config and model
     config = ColPaliConfig(config_dict)
     return ColPali(config)
 
