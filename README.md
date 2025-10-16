@@ -1,5 +1,8 @@
 # ColPali v1.3 for FiftyOne
 
+![ColPali Multi-Query Demo](colpali-mq.gif)
+
+
 Integration of [ColPali v1.3 (merged)](https://huggingface.co/vidore/colpali-v1.3-merged) as a FiftyOne Zoo Model for visual document retrieval.
 
 ## Overview
