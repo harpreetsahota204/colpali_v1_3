@@ -103,13 +103,30 @@ text_img_index = fob.compute_similarity(
     }
 )
 
-# Query for specific content
-sims = text_img_index.sort_by_similarity(
-    "the secret office supply is pencil"
-)
+# Sort by similarity to text query
 
+text_sim = text_img_index.sort_by_similarity(
+    ["AIG Documents", "UPS Documents", "The secret currency is Euro", "The secret office supply is a stapler"]
+    k=3
+)
 # Launch FiftyOne App
 session = fo.launch_app(dataset, auto=False)
+```
+
+
+# Zero-shot classification
+
+```python
+
+classes = dataset.distinct("document_name.label")
+
+model.classes = classes
+model.text_prompt = "A document from "
+
+dataset.apply_model(
+    model,
+    label_field="document_name_predictions"
+)
 ```
 
 ## Advanced Embedding Workflows
@@ -156,11 +173,14 @@ results = fob.compute_similarity(
 
 # Find similar images
 sample_id = dataset.first().id
+
 similar_samples = dataset.sort_by_similarity(
     sample_id,
     brain_key="colpali_sim",
     k=10  # Top 10 most similar
 )
+
+
 
 # View results
 session = fo.launch_app(similar_samples)
