@@ -232,14 +232,15 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
     def classes(self, value):
         """Set new classes and invalidate cached text features."""
         self._classes = value
-        self._text_features = None  # Invalidate cache
+        self._text_features = None
         
-        # Rebuild output processor if classes are provided
         if value is not None and len(value) > 0:
-            self._output_processor = self._build_output_processor(self.config)
+            # Import and instantiate directly
+            from fiftyone.utils.torch import ClassifierOutputProcessor
+            self._output_processor = ClassifierOutputProcessor(classes=value)
         else:
             self._output_processor = None
-            
+                
         @property
         def text_prompt(self):
             """The text prompt prefix for classification."""
