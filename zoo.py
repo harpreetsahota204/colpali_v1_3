@@ -1,8 +1,5 @@
 import logging
 import os
-from packaging.version import Version
-import warnings
-import math
 from PIL import Image
 
 import numpy as np
@@ -54,6 +51,13 @@ class ColPaliConfig(fout.TorchImageModelConfig):
         if "raw_inputs" not in d:
             d["raw_inputs"] = True
         
+        # Only set up the output processor if classes are provided (for classification)
+        # If no classes, this model will be used only for embeddings
+        if "classes" in d and d["classes"] is not None and len(d["classes"]) > 0:
+            if "output_processor_cls" not in d:
+                d["output_processor_cls"] = "fiftyone.utils.torch.ClassifierOutputProcessor"
+        
+        # Let parent class handle everything, including classes
         super().__init__(d)
         
         # Path to model weights or HuggingFace model ID
@@ -102,13 +106,13 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         Args:
             config: A ColPaliConfig instance containing model parameters
         """
-        # Initialize parent classes
+        # Initialize parent classes (this sets self._classes from config.classes)
         super().__init__(config)
         
         # Storage for text features and embeddings
         self._text_features = None  # Cached text features for classification
-        self._last_computed_embeddings = None  # Last computed image embeddings
-        self._last_computed_multi_vector_embeddings = None  # Store full multi-vector embeddings
+        self._last_computed_embeddings = None  # Last computed 1D image embeddings
+        self._last_computed_multi_vector_embeddings = None  # Store token-pooled multi-vector embeddings
         
         # Initialize token pooler for compression
         self.token_pooler = HierarchicalTokenPooler()
@@ -205,7 +209,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         Creates embeddings for each class by combining text_prompt with class names.
         
         Returns:
-            torch.Tensor: Multi-vector text features for classification
+            torch.Tensor: Token-pooled multi-vector text features for classification
         """
         # Check if text features are already computed and cached
         if self._text_features is None:
@@ -220,16 +224,15 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         return self._text_features
     
     def _embed_prompts(self, prompts):
-        """Embed text prompts for similarity search.
+        """Embed text prompts for classification.
         
-        Uses ColPali's multi-vector embedding approach where each prompt
-        is represented by multiple embedding vectors.
+        Uses ColPali's multi-vector embedding approach with token pooling for compression.
         
         Args:
             prompts: List of text prompts to embed
             
         Returns:
-            torch.Tensor: Multi-vector embeddings for the prompts with shape (batch, num_vectors, embedding_dim)
+            torch.Tensor: Token-pooled multi-vector embeddings with shape (batch, reduced_num_vectors, embedding_dim)
         """
         # Process text queries using ColPaliProcessor
         batch_queries = self.processor.process_queries(prompts).to(self.device)
@@ -238,64 +241,54 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         with torch.no_grad():
             query_embeddings = self.model(**batch_queries)
         
-        # Return multi-vector embeddings
-        return query_embeddings
-
-    def embed_prompt(self, prompt):
-        """Embed a single text prompt with token pooling.
-        
-        Uses token pooling to reduce sequence length while retaining ~98% performance.
-        
-        Args:
-            prompt: Text prompt to embed
-            
-        Returns:
-            numpy array: Token-pooled embedding with shape (reduced_num_vectors, dim)
-        """
-        
-        # Embed the single prompt
-        embeddings = self._embed_prompts([prompt])
-
-        # Apply token pooling to reduce sequence length
+        # Apply token pooling to compress sequence length
         pooled_embeddings = self.token_pooler.pool_embeddings(
-            embeddings,
+            query_embeddings,
             pool_factor=self.pool_factor,
             padding=True,
             padding_side=self.processor.tokenizer.padding_side,
         )
         
-        # Apply final pooling strategy (always produces fixed dimension)
-        final_embeddings = self._apply_final_pooling(pooled_embeddings)
+        # Return token-pooled multi-vector embeddings for classification
+        return pooled_embeddings
+
+    def embed_prompt(self, prompt):
+        """Embed a single text prompt to 1D vector for retrieval.
+        
+        Uses token pooling + final pooling to create a single vector.
+        
+        Args:
+            prompt: Text prompt to embed
+            
+        Returns:
+            numpy array: 1D embedding vector with shape (dim,)
+        """
+        # Get token-pooled multi-vector embeddings
+        embeddings = self._embed_prompts([prompt])
+        
+        # Apply final pooling strategy to get 1D vector
+        final_embeddings = self._apply_final_pooling(embeddings)
         
         # Return first (and only) embedding: (1, dim) -> (dim,)
         result = final_embeddings[0].detach().cpu().numpy()
         return result
 
     def embed_prompts(self, prompts):
-        """Embed multiple text prompts with token pooling.
+        """Embed multiple text prompts to 1D vectors for retrieval.
         
-        Uses token pooling to reduce sequence length while retaining ~98% performance.
+        Uses token pooling + final pooling to create single vectors.
         
         Args:
             prompts: List of text prompts to embed
             
         Returns:
-            numpy array: Token-pooled embeddings with shape (batch, reduced_num_vectors, dim)
+            numpy array: 1D embeddings with shape (batch, dim)
         """
-
-        # Embed prompts
+        # Get token-pooled multi-vector embeddings
         embeddings = self._embed_prompts(prompts)
-
-        # Apply token pooling to reduce sequence length
-        pooled_embeddings = self.token_pooler.pool_embeddings(
-            embeddings,
-            pool_factor=self.pool_factor,
-            padding=True,
-            padding_side=self.processor.tokenizer.padding_side,
-        )
         
-        # Apply final pooling strategy
-        final_embeddings = self._apply_final_pooling(pooled_embeddings)
+        # Apply final pooling strategy to get 1D vectors
+        final_embeddings = self._apply_final_pooling(embeddings)
         
         # Return as numpy array
         result = final_embeddings.detach().cpu().numpy()
@@ -307,13 +300,14 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         With raw_inputs=True, FiftyOne passes images in their original format
         (PIL, numpy array, or tensor). ColPaliProcessor requires PIL Images.
         
-        Returns raw multi-vector embeddings.
+        Returns 1D embeddings for retrieval, but also stores token-pooled
+        multi-vector embeddings internally for classification.
         
         Args:
             imgs: List of images to embed (PIL images, numpy arrays (HWC), or tensors (CHW))
             
         Returns:
-            numpy array: Multi-vector embeddings for the images with shape (batch, num_vectors, dim)
+            numpy array: 1D embeddings with shape (batch, dim)
         """
         # Convert to PIL Images if needed (ColPaliProcessor requirement)
         pil_images = []
@@ -342,10 +336,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         with torch.no_grad():
             image_embeddings = self.model(**batch_images)
         
-        # Store the full multi-vector embeddings for classification scoring (before pooling)
-        self._last_computed_multi_vector_embeddings = image_embeddings
-        
-        # Apply token pooling to reduce sequence length
+        # Apply token pooling to compress sequence length
         pooled_embeddings = self.token_pooler.pool_embeddings(
             image_embeddings,
             pool_factor=self.pool_factor,
@@ -353,7 +344,10 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
             padding_side=self.processor.tokenizer.padding_side,
         )
         
-        # Apply final pooling strategy
+        # Store token-pooled multi-vector embeddings for classification
+        self._last_computed_multi_vector_embeddings = pooled_embeddings
+        
+        # Apply final pooling to get 1D vectors for retrieval
         final_embeddings = self._apply_final_pooling(pooled_embeddings)
         
         # Cache final embeddings for get_embeddings() method
@@ -372,7 +366,7 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
             img: PIL image to embed
             
         Returns:
-            numpy array: Multi-vector embedding for the image with shape (num_vectors, dim)
+            numpy array: 1D embedding with shape (dim,)
         """
         # Convert single image to a list for batch processing
         imgs = [img]
@@ -392,24 +386,23 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
             imgs: List of images to embed (PIL images)
             
         Returns:
-            numpy array: Multi-vector embeddings for the images with shape (batch, num_vectors, dim)
+            numpy array: 1D embeddings with shape (batch, dim)
         """
         # Directly call embed_images which handles batch processing
         return self.embed_images(imgs)
     
     def get_embeddings(self):
-        """Get the last computed embeddings.
+        """Get the last computed 1D embeddings.
         
         Required override for TorchEmbeddingsMixin to provide embeddings
         in the expected format for FiftyOne.
         
         Returns:
-            numpy array: The last computed multi-vector embeddings
+            numpy array: The last computed 1D embeddings
             
         Raises:
             ValueError: If no embeddings have been computed yet
         """
-        
         # Check if embeddings capability is enabled
         if not self.has_embeddings:
             raise ValueError("This model instance does not expose embeddings")
@@ -418,7 +411,6 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         if self._last_computed_embeddings is None:
             raise ValueError("No embeddings have been computed yet")
         
-            
         # Return the stored embeddings as a CPU numpy array
         result = self._last_computed_embeddings.detach().cpu().numpy()
         return result
@@ -427,10 +419,13 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         """Calculate multi-vector similarity scores between text and image features.
         
         Uses ColPali's multi-vector scoring approach similar to ColBERT's MaxSim operation.
+        Both inputs are token-pooled multi-vector embeddings.
         
         Args:
-            text_features: Multi-vector text embeddings (torch.Tensor) with shape (num_classes, num_vectors, dim)
-            image_features: Multi-vector image embeddings (torch.Tensor) with shape (num_images, num_vectors, dim)
+            text_features: Token-pooled multi-vector text embeddings (torch.Tensor) 
+                          with shape (num_classes, reduced_num_vectors, dim)
+            image_features: Token-pooled multi-vector image embeddings (torch.Tensor) 
+                           with shape (num_images, reduced_num_vectors, dim)
             
         Returns:
             tuple: (logits_per_image, logits_per_text) following CLIP convention
@@ -440,7 +435,11 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         with torch.no_grad():
             # Use ColPaliProcessor's scoring method for multi-vector similarity
             # Returns shape (num_classes, num_images)
-            logits_per_text = self.processor.score_multi_vector(text_features, image_features)
+            logits_per_text = self.processor.score_multi_vector(
+                text_features, 
+                image_features, 
+                device=self.device
+            )
             
             # Transpose to get (num_images, num_classes) for FiftyOne
             logits_per_image = logits_per_text.t()
@@ -453,19 +452,36 @@ class ColPali(fout.TorchImageModel, fom.PromptMixin):
         Used for zero-shot classification by comparing image embeddings
         to text embeddings of class names using multi-vector similarity.
         
+        Both image and text embeddings are token-pooled multi-vectors,
+        ensuring consistent representation.
+        
         Args:
             imgs: List of images to classify
             
         Returns:
             numpy array: Similarity scores (logits)
         """
-        # Get image embeddings (stores multi-vector embeddings internally)
+        # Check if classification is supported
+        if self.classes is None or len(self.classes) == 0:
+            raise ValueError(
+                "Cannot perform classification without classes. "
+                "Load the model with classes: "
+                "foz.load_zoo_model(..., classes=['class1', 'class2', ...])"
+            )
+        
+        if self._output_processor is None:
+            raise ValueError(
+                "No output processor configured for classification. "
+                "This should not happen if classes were provided correctly."
+            )
+        
+        # Get image embeddings (stores token-pooled multi-vector embeddings internally)
         _ = self.embed_images(imgs)
         
-        # Get multi-vector image embeddings
+        # Get token-pooled multi-vector image embeddings
         image_features = self._last_computed_multi_vector_embeddings
         
-        # Get multi-vector text embeddings for classes
+        # Get token-pooled multi-vector text embeddings for classes
         text_features = self._get_text_features()
         
         # Calculate multi-vector similarity (following CLIP pattern)
